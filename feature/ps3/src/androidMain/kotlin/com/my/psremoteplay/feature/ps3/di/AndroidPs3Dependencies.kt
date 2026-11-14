@@ -18,7 +18,7 @@ import com.my.psremoteplay.core.streaming.video.VideoRenderer
 import com.my.psremoteplay.feature.ps3.platform.AndroidControllerInput
 import com.my.psremoteplay.feature.ps3.platform.AndroidPremoSession
 import com.my.psremoteplay.feature.ps3.platform.AndroidPs3Discoverer
-import com.my.psremoteplay.feature.ps3.platform.StubRegistration
+import com.my.psremoteplay.feature.ps3.platform.JvmPremoRegistration
 import com.my.psremoteplay.feature.ps3.protocol.PremoRegistration
 import com.my.psremoteplay.feature.ps3.protocol.PremoSessionHandler
 import com.my.psremoteplay.feature.ps3.protocol.Ps3Discoverer
@@ -48,6 +48,6 @@ class AndroidPs3Dependencies : Ps3Dependencies {
 
     override val discoverer: Ps3Discoverer = AndroidPs3Discoverer(logger)
     override val sessionHandler: PremoSessionHandler = AndroidPremoSession(crypto, logger)
-    override val registration: PremoRegistration = StubRegistration()
+    override val registration: PremoRegistration = JvmPremoRegistration(crypto, logger)
     override val controllerInput: ControllerInputSender = AndroidControllerInput(logger)
 }
