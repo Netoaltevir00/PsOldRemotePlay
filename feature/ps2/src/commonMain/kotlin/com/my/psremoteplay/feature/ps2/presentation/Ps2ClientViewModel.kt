@@ -1,0 +1,200 @@
+package com.my.psremoteplay.feature.ps2.presentation
+
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.my.psremoteplay.core.streaming.ConnectionStatus
+import com.my.psremoteplay.core.streaming.LogEntry
+import com.my.psremoteplay.core.streaming.Logger
+import com.my.psremoteplay.feature.ps2.di.Ps2ClientDependencies
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+
+class Ps2ClientViewModel(private val deps: Ps2ClientDependencies) : ViewModel() {
+
+    private val _state = MutableStateFlow(Ps2ClientState())
+    val state: StateFlow<Ps2ClientState> = _state.asStateFlow()
+
+    /** Video frames from the active strategy */
+    val currentFrame: StateFlow<ImageBitmap?> = deps.videoStreamClient.currentFrame
+
+    private val _effects = Channel<Ps2ClientEffect>(Channel.BUFFERED)
+    val effects: Flow<Ps2ClientEffect> = _effects.receiveAsFlow()
+
+    private var streamingJob: Job? = null
+    private var inputCount = 0L
+
+    private val logger = object : Logger {
+        override fun log(tag: String, message: String) {
+            addLog(tag, message, isError = false)
+            deps.logger.log(tag, message)
+        }
+        override fun error(tag: String, message: String, throwable: Throwable?) {
+            val errMsg = "$message${throwable?.let { "\n  ${it::class.simpleName}: ${it.message}" } ?: ""}"
+            addLog(tag, errMsg, isError = true)
+            deps.logger.error(tag, message, throwable)
+        }
+    }
+
+    fun onIntent(intent: Ps2ClientIntent) {
+        when (intent) {
+            is Ps2ClientIntent.UpdateServerIp -> updateState { copy(serverIp = sanitizeHost(intent.ip)) }
+            is Ps2ClientIntent.UpdateServerPort -> updateState { copy(serverPort = intent.port) }
+            is Ps2ClientIntent.Connect -> connect()
+            is Ps2ClientIntent.Disconnect -> disconnect()
+            is Ps2ClientIntent.Reconnect -> reconnect()
+            is Ps2ClientIntent.ControllerInput -> handleControllerInput(intent.state)
+            is Ps2ClientIntent.ToggleController -> updateState { copy(showController = !showController) }
+            is Ps2ClientIntent.ClearLogs -> updateState { copy(logs = emptyList()) }
+        }
+    }
+
+    private fun connect() {
+        val s = _state.value
+        if (s.serverIp.isBlank()) {
+            logger.error("CLIENT", "Enter server IP first")
+            return
+        }
+
+        streamingJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val strategy = deps.videoStreamClient
+            val config = deps.streamConfig.copy(videoPort = s.serverPort + 1)
+
+            logger.log("CLIENT", "Connecting [${strategy.name}] to ${s.serverIp}...")
+            updateState { copy(connectionStatus = ConnectionStatus.Connecting, statusText = "Connecting...") }
+
+            // 1. Connect control channel (TCP)
+            val controlOk = deps.connectControl(s.serverIp, s.serverPort,
+                onServerInfo = { info -> logger.log("CLIENT", "Server info: $info") }
+            )
+            if (!controlOk) {
+                updateState { copy(connectionStatus = ConnectionStatus.Error, statusText = "Control failed") }
+                logger.error("CLIENT", "Control channel failed")
+                return@launch
+            }
+
+            // 2. Connect video stream via strategy
+            val videoOk = strategy.start(s.serverIp, config)
+            if (!videoOk) {
+                deps.disconnectControl()
+                updateState { copy(connectionStatus = ConnectionStatus.Error, statusText = "Video failed") }
+                logger.error("CLIENT", "Video stream failed")
+                return@launch
+            }
+
+            // 3. Start audio (port = video port + 1)
+            deps.startAudio(config.videoPort + 1)
+
+            // 4. Track frames + compute FPS
+            if (strategy.usesSurfaceRendering) {
+                launch {
+                    var lastCount = 0L
+                    var lastTime = System.currentTimeMillis()
+                    while (true) {
+                        kotlinx.coroutines.delay(1000)
+                        val count = strategy.decodedFrameCount
+                        val now = System.currentTimeMillis()
+                        val elapsed = now - lastTime
+                        val fps = if (elapsed > 0) ((count - lastCount) * 1000 / elapsed).toInt() else 0
+                        lastCount = count; lastTime = now
+                        _state.update { it.copy(videoFrameCount = count.toInt(), decodeFps = fps) }
+                    }
+                }
+            } else {
+                launch {
+                    strategy.currentFrame.collect { frame ->
+                        if (frame != null) _state.update { it.copy(videoFrameCount = it.videoFrameCount + 1) }
+                    }
+                }
+            }
+
+            // 4. Ping measurement (TCP round-trip to server)
+            launch {
+                while (true) {
+                    kotlinx.coroutines.delay(2000)
+                    val start = System.currentTimeMillis()
+                    val connected = deps.isConnected()
+                    val elapsed = (System.currentTimeMillis() - start).toInt()
+                    if (connected) _state.update { it.copy(pingMs = elapsed) }
+                }
+            }
+
+            updateState {
+                copy(
+                    connectionStatus = ConnectionStatus.Streaming,
+                    isStreaming = true,
+                    usesSurfaceRendering = strategy.usesSurfaceRendering,
+                    statusText = "Streaming [${strategy.name}] from ${s.serverIp}"
+                )
+            }
+            logger.log("CLIENT", "Connected via ${strategy.name}")
+        }
+    }
+
+    override fun onCleared() {
+        disconnect()
+    }
+
+    private fun reconnect() {
+        logger.log("CLIENT", "Reconnecting...")
+        disconnect()
+        // Small delay to let sockets close, then reconnect
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(500)
+            connect()
+        }
+    }
+
+    private fun disconnect() {
+        streamingJob?.cancel()
+        streamingJob = null
+        viewModelScope.launch {
+            deps.stopAudio()
+            deps.videoStreamClient.stop()
+            deps.disconnectControl()
+            updateState {
+                copy(
+                    connectionStatus = ConnectionStatus.Disconnected,
+                    isStreaming = false,
+                    videoFrameCount = 0,
+                    statusText = "Disconnected"
+                )
+            }
+            logger.log("CLIENT", "Disconnected")
+        }
+    }
+
+    private fun handleControllerInput(state: com.my.psremoteplay.core.streaming.input.ControllerState) {
+        inputCount++
+        if (deps.isConnected()) deps.sendControllerState(state)
+        if (inputCount % 30 == 0L) {
+            logger.log("INPUT", "#$inputCount btn=0x${state.buttons.toString(16)} " +
+                "L=(${f2(state.leftStickX)},${f2(state.leftStickY)}) " +
+                "R=(${f2(state.rightStickX)},${f2(state.rightStickY)}) " +
+                "L2=${f2(state.l2)} R2=${f2(state.r2)}")
+        }
+    }
+
+    private fun f2(v: Float): String = "%.2f".format(v)
+
+    private fun addLog(tag: String, message: String, isError: Boolean) {
+        val entry = LogEntry(timestamp = currentTimestamp(), tag = tag, message = message, isError = isError)
+        updateState { copy(logs = logs + entry) }
+    }
+
+    private inline fun updateState(transform: Ps2ClientState.() -> Ps2ClientState) {
+        _state.update(transform)
+    }
+}
+
+private fun sanitizeHost(input: String): String {
+    return input.trim()
+        .removePrefix("http://").removePrefix("https://")
+        .removeSuffix("/").split(":").first()
+}
+
+private fun currentTimestamp(): String = SimpleDateFormat("HH:mm:ss.SSS").format(Date())
