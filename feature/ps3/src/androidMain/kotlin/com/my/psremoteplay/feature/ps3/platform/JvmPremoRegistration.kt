@@ -31,7 +31,7 @@ class JvmPremoRegistration(private val crypto: Crypto, private val logger: Logge
     ): Result<RegistrationResult> = withContext(Dispatchers.IO) {
         try {
             logger.log("REGIST", "=== REGISTRATION STRATEGY ORCHESTRATOR ===")
-            logger.log("REGIST", "PS3: $ps3Ip, PIN: $pin")
+        logger.log("REGIST", "Registration started (PIN redacted)")
             logger.log("REGIST", "Testing ${RegistrationStrategies.allStrategies.count { it.isEnabled }} enabled strategies...")
             logger.log("REGIST", "")
 
@@ -57,7 +57,7 @@ class JvmPremoRegistration(private val crypto: Crypto, private val logger: Logge
 
                 if (attempt.success) {
                     logger.log("REGIST", "✅ SUCCESS with ${strategy.name}!")
-                    logger.log("REGIST", "PKey: ${attempt.pkey?.joinToString("") { "%02X".format(it) } ?: "null"}")
+        logger.log("REGIST", "PKey: [REDACTED]")
                     logger.log("REGIST", "PS3 MAC: ${attempt.ps3Mac}")
                     logger.log("REGIST", "PS3 Nickname: ${attempt.ps3Nickname}")
                     logger.log("REGIST", "")
