@@ -566,10 +566,10 @@ class PSPTypePS4FormulaStrategy : RegistrationStrategy {
     private fun pinToContextBytes(pin: String): ByteArray {
         val pinInt = pin.toLongOrNull() ?: 0L
         val bytes = ByteArray(8)
-        bytes[0] = (pinInt shr 24 and 0xFF).toByte()
-        bytes[1] = (pinInt shr 16 and 0xFF).toByte()
-        bytes[2] = (pinInt shr 8 and 0xFF).toByte()
-        bytes[3] = (pinInt and 0xFF).toByte()
+        bytes[4] = (pinInt shr 24 and 0xFF).toByte()
+        bytes[5] = (pinInt shr 16 and 0xFF).toByte()
+        bytes[6] = (pinInt shr 8 and 0xFF).toByte()
+        bytes[7] = (pinInt and 0xFF).toByte()
         return bytes
     }
 
