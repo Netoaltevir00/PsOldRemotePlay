@@ -1,0 +1,42 @@
+name: Build PsOldRemotePlay Android
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Install Gradle 8.14.3
+        run: |
+          wget https://services.gradle.org/distributions/gradle-8.14.3-bin.zip
+          unzip -q gradle-8.14.3-bin.zip
+          echo "$GITHUB_WORKSPACE/gradle-8.14.3/bin" >> $GITHUB_PATH
+
+      - name: Build Android APK
+        run: |
+          gradle :app:ps3:assembleDebug --stacktrace
+
+      - name: Save APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PsOldRemotePlay-Android
+          path: app/ps3/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
